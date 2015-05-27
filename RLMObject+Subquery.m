@@ -68,18 +68,6 @@ NSString *reason = @"predicate must be an NSString with optional format va_list"
 
 #pragma mark - Private Class
 
-+ (NSExpression *)retrieveFunctionExpressionInComparisonPredicate:(NSComparisonPredicate *)comparisonPredicate
-{
-    if (comparisonPredicate.leftExpression.expressionType == NSFunctionExpressionType) {
-        return comparisonPredicate.leftExpression;
-    }
-    else if (comparisonPredicate.rightExpression.expressionType == NSFunctionExpressionType) {
-        return comparisonPredicate.rightExpression;
-    }
-    
-    return nil;
-}
-
 + (NSExpression *)retrieveSubqueryExpressionInFunctionExpression:(NSExpression *)functionExpression
 {
     if (functionExpression.expressionType == NSFunctionExpressionType) {
@@ -128,12 +116,28 @@ NSString *reason = @"predicate must be an NSString with optional format va_list"
     if ([predicate isMemberOfClass:[NSComparisonPredicate class]]) {
         NSComparisonPredicate *comparisonPredicate = (NSComparisonPredicate *)predicate;
         
-        NSExpression *functionExpression = [self retrieveFunctionExpressionInComparisonPredicate:comparisonPredicate];
+        NSPredicateOperatorType operatorType = comparisonPredicate.predicateOperatorType;
+        
+        NSExpression *functionExpression = nil;
+        
+        NSExpression *opposingExpression = nil;
+        
+        BOOL functionIsLeft = NO;
+        
+        // Get all the values
+        [self comparisonPredicate:comparisonPredicate
+       identifyFunctionExpression:&functionExpression
+               opposingExpression:&opposingExpression
+                   functionIsLeft:&functionIsLeft];
         
         if (functionExpression) {
             NSExpression *subqueryExpression = [self retrieveSubqueryExpressionInFunctionExpression:functionExpression];
             
             if (subqueryExpression) {
+                
+                // Now we know we have a subquery, so get the collection operator from functionExpress
+                NSString *collectionOperatorString = [self collectionOperatorFromFunctionExpression:functionExpression];
+                
                 NSPredicate *subqueryPredicate = [self retrievePredicateFromSubqueryExpression:subqueryExpression];
                 
                 NSString *variable = subqueryExpression.variable;
@@ -152,7 +156,7 @@ NSString *reason = @"predicate must be an NSString with optional format va_list"
                     RLMResults *subquery = [subqueryClass objectsInRealm:realm
                                                            withPredicate:cleanedSubquery];
                     
-                    NSMutableSet *primaryKeys = [NSMutableSet set];
+                    NSCountedSet *primaryKeys = [NSCountedSet set];
                     
                     NSString *primaryKey = nil;
                     
@@ -179,10 +183,55 @@ NSString *reason = @"predicate must be an NSString with optional format va_list"
                         }
                     }
                     
-                    // Create replacement predicate with primary keys
-                    NSPredicate *subqueryReplacement = [NSPredicate predicateWithFormat:@"%K IN %@",primaryKey,primaryKeys];
-                    
-                    return subqueryReplacement;
+                    if ([collectionOperatorString isEqualToString:@"@count"]) {
+                        
+                        if (opposingExpression.expressionType == NSConstantValueExpressionType) {
+                            
+                            NSNumber *constantValue = opposingExpression.constantValue;
+                            
+                            NSMutableSet *primaryKeysSubset = [NSMutableSet set];
+                            
+                            // We need to create subset of values with count greater than constant value
+                            if (constantValue.doubleValue > 0) {
+                                
+                                for (id primaryKeyValue in primaryKeys) {
+                                    NSUInteger count = [primaryKeys countForObject:primaryKeyValue];
+
+                                    NSNumber *functionValue = @(count);
+                                    
+                                    if ([self performComparisonUsingOperator:operatorType
+                                                               functionValue:functionValue
+                                                               constantValue:constantValue
+                                                              functionIsLeft:functionIsLeft]) {
+                                        
+                                        [primaryKeysSubset addObject:primaryKeyValue];
+                                    }
+                                }
+                                
+                                // Create replacement predicate with primary key subset
+                                NSPredicate *subqueryReplacement = [NSPredicate predicateWithFormat:@"%K IN %@",primaryKey,primaryKeysSubset];
+                                
+                                return subqueryReplacement;
+                            }
+                            else {
+                                
+                                // Create replacement predicate with primary keys
+                                NSPredicate *subqueryReplacement = [NSPredicate predicateWithFormat:@"%K IN %@",primaryKey,primaryKeys];
+                                
+                                return subqueryReplacement;
+                            }
+                        }
+                        else {
+                            @throw [NSException exceptionWithName:@"RLMException"
+                                                           reason:@"Subquery count evaluation only supports constant values"
+                                                         userInfo:nil];
+                        }
+                    }
+                    else {
+                        @throw [NSException exceptionWithName:@"RLMException"
+                                                       reason:@"Only @count collection operator supported"
+                                                     userInfo:nil];
+                    }
                 }
             }
         }
@@ -220,6 +269,77 @@ NSString *reason = @"predicate must be an NSString with optional format va_list"
     }
     
     return predicate;
+}
+
++ (void)comparisonPredicate:(NSComparisonPredicate *)comparisonPredicate
+ identifyFunctionExpression:(NSExpression **)functionExpression
+         opposingExpression:(NSExpression **)opposingExpression
+             functionIsLeft:(BOOL *)functionIsLeft
+{
+    if (comparisonPredicate.leftExpression.expressionType == NSFunctionExpressionType) {
+        
+        *functionExpression = comparisonPredicate.leftExpression;
+        
+        *opposingExpression = comparisonPredicate.rightExpression;
+        
+        *functionIsLeft = YES;
+    }
+    else if (comparisonPredicate.rightExpression.expressionType == NSFunctionExpressionType) {
+        
+        *functionExpression = comparisonPredicate.rightExpression;
+        
+        *opposingExpression = comparisonPredicate.leftExpression;
+    }
+}
+
++ (NSString *)collectionOperatorFromFunctionExpression:(NSExpression *)functionExpression
+{
+    id collectionOperator = functionExpression.arguments[0];
+    
+    NSString *collectionOperatorString = [NSString stringWithFormat:@"%@",collectionOperator];
+    
+    return collectionOperatorString;
+}
+
++ (BOOL)performComparisonUsingOperator:(NSPredicateOperatorType)operatorType
+                         functionValue:(NSNumber *)functionValue
+                         constantValue:(NSNumber *)constantValue
+                        functionIsLeft:(BOOL)functionIsLeft
+{
+    NSNumber *leftValue = nil;
+    NSNumber *rightValue = nil;
+    
+    if (functionIsLeft) {
+        leftValue = functionValue;
+        rightValue = constantValue;
+    }
+    else {
+        rightValue = functionValue;
+        leftValue = constantValue;
+    }
+    
+    if (operatorType == NSLessThanPredicateOperatorType) {
+        return leftValue < rightValue;
+    }
+    else if (operatorType == NSLessThanOrEqualToPredicateOperatorType) {
+        return leftValue <= rightValue;
+    }
+    else if (operatorType == NSGreaterThanPredicateOperatorType) {
+        return leftValue > rightValue;
+    }
+    else if (operatorType == NSGreaterThanOrEqualToPredicateOperatorType) {
+        return leftValue >= rightValue;
+    }
+    else if (operatorType == NSEqualToPredicateOperatorType) {
+        return leftValue == rightValue;
+    }
+    else if (operatorType == NSNotEqualToPredicateOperatorType) {
+        return leftValue != rightValue;
+    }
+    
+    @throw [NSException exceptionWithName:@"RLMException"
+                                   reason:@"Unsupported expression operator for subquery count and constant value"
+                                 userInfo:nil];
 }
 
 + (Class)classOfToManyPropertyNamed:(NSString *)propertyName
