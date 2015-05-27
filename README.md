@@ -23,6 +23,27 @@ The format is similar to the standard NSPredicate `SUBQUERY` expression:
 ```Objective-C
 SUBQUERY(RLMArray keypath, variable, predicate)
 ```
+
+####Installation
+RBQFetchedResultsController is available through [CocoaPods](http://cocoapods.org). To install
+it, simply add the following line to your Podfile:
+
+    pod 'RealmSubqueryHelper'
+
+####Demo
+
+Build and run/test the Example project in Xcode to see a working `SUBQUERY`. This project uses CocoaPods. If you don't have [CocoaPods](http://cocoapods.org/) installed, grab it with [sudo] gem install cocoapods.
+
+```
+git clone https://github.com/bigfish24/RealmSubqueryHelper
+cd RealmSubqueryHelper/objc-example
+pod install
+open RBQFetchedResultsControllerExample.xcworkspace
+```
+
+#####Requirements
+* iOS 7+
+
 ####Limitations
 1. The base object must have a primary key (above, `Person` has primary key `Id`).
 2. Only the `@count` collection operator is supported.
